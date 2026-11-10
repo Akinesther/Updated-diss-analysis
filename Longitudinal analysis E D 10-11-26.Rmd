@@ -1,0 +1,586 @@
+---
+title: "Physical Behaviour and Incident Dementia: an EPIC-Norfolk Analysis"
+subtitle: "Longitudinal Analysis"
+author: "Epidemiology7335"
+date: "2026-11-10"
+output:
+  html_document:
+    theme: spacelab
+    code_download: true
+    code_folding: show
+    toc: true
+    toc_float: true
+  pdf_document:
+    toc: true
+---
+```{r}
+
+knitr::opts_chunk$set(
+	echo = TRUE,
+	cache = TRUE,
+	results = "hide",
+	warning = FALSE,
+	message = FALSE
+)
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	cache = TRUE,
+	results = "hide"
+)
+if("librarian" %in% installed.packages()==FALSE) install.packages(c("librarian"))
+librarian::shelf(
+      knitr, prettydoc, dplyr, readr, gtsummary, tidyr, 
+      naniar, mice, ggplot2, survival, flexsurv, 
+      powerSurvEpi, psych, mosaic, ranger, 
+      gt, mice, car, broom)
+```
+
+## Epic-Norfolk analysis code: Physical Behaviour and Dementia
+
+### Longitudinal analysis
+
+Data set preparation
+```{R data set prep}
+# Merging separate disease columns into one
+Valid.exp.3.4 <- Valid.exp.3.4 |> mutate(PREV_DISEASE = case_when(
+  if_any(all_of(Disease_cols), ~ .x == "Yes") ~ 1,
+  if_all(all_of(Disease_cols), is.na) ~ NA_real_,
+  TRUE ~ 0))
+
+Valid.exp.3.4$PREV_DISEASE <- ifelse(Valid.exp.3.4$PREV_DISEASE == 1, 1, 0)
+
+Valid.exp.3.4 <- Valid.exp.3.4 |> mutate(PREV_DISEASE = factor(PREV_DISEASE,
+                                                               levels = c(1,0),
+                                                               labels = c("Yes", "No")))
+
+# Dropping missing covariate data
+FinalHC4 <- Valid.exp.3.4 |> drop_na(ETHNIC,
+                                     EDLEVEL09, 
+                                     RETIRED3, 
+                                     URBANRURALSTATUS, 
+                                     MARITAL_STATUS3, 
+                                     ALT_BMI_HC3, 
+                                     BP2,
+                                     HEARING_FU4,
+                                     UNITNOW3,
+                                     CVA3,
+                                     DM3,
+                                     MI3,
+                                     CA3)
+
+# Follow-up column 
+FinalHC4 <- FinalHC4 |> mutate(INC_DEMENTIA_ALL_NUM = recode_values(INC_DEMENTIA_ALL,
+                                                                              "Dementia" ~ 1,
+                                                                              "No dementia" ~ 0))
+
+FinalHC4 <- FinalHC4|> mutate(INC_DEMENTIA_ALL_DATE_Y10TH = replace_na(INC_DEMENTIA_ALL_DATE_Y10TH, 0)) 
+
+# For those with dementia, change EOF_Y10TH to incident dementia date, or retain EOF_Y10TH in those who are dementia free
+FinalHC4 <- FinalHC4 |> mutate(EOF_Y10TH = if_else(INC_DEMENTIA_ALL_NUM == 1, #condition
+                                                   INC_DEMENTIA_ALL_DATE_Y10TH, # if yes
+                                                   EOF_Y10TH)) # otherwise
+favstats(FinalHC4$DOC_HC4)
+
+# Landmark analysis
+FinalHC4 <- FinalHC4 |> mutate(HC4_FOLLOW_UP = if_else(EOF_Y10TH == 0, # condition
+                                                       (2024.2 - DOC_HC4)/ 2, # if yes
+                                                       (EOF_Y10TH - DOC_HC4))) # For those with null EOF, assume follow-up years as halfway between HC4 and study completion  
+
+# HC3 physical behaviour variables
+FinalHC4 <- FinalHC4 |> mutate(TPA3 = TOTAL_COUNTS_BOUTS_HC3/ TOTALWEAR_BOUTS_HC3,
+                               MVPA3 = TOTAL_CUM_BT_MVPA_809_HC3/ VALID_DAYS_BOUTS_HC3,
+                               LPA3 = TOTAL_CUM_BT_LPA_100_809_HC3/ VALID_DAYS_BOUTS_HC3,
+                               ST3 = TOTAL_CUM_BT_SED_100_HC3/ VALID_DAYS_BOUTS_HC3,
+                               SEDBOUT3 = TOT_BOUT_MT30_SED_100_HC3/ VALID_DAYS_BOUTS_HC3)
+
+FinalHC4 <- FinalHC4 |> mutate(MVPA3_10min = MVPA3/10,
+                               LPA3_10min = LPA3/10,
+                               ST3_10min = ST3/10)
+
+# HC4 physical behaviour variables
+FinalHC4 <- FinalHC4 |> mutate(TPA4 = TOTAL_COUNTS_BOUTS_HC4/ TOTALWEAR_BOUTS_HC4,
+                               MVPA4 =TOTAL_CUM_BT_MVPA_809_HC4/ VALID_DAYS_BOUTS_HC4,
+                               LPA4 = TOTAL_CUM_BT_LPA_100_809_HC4/ VALID_DAYS_BOUTS_HC4, 
+                               ST4 = TOTAL_CUM_BTIME_SED_100_HC4/ VALID_DAYS_BOUTS_HC4,
+                               SEDBOUT4 = TOT_BOUT_MT30_SED_100_HC4/ VALID_DAYS_BOUTS_HC4)
+
+FinalHC3 <- FinalHC4 |> mutate(MVPA4_10min = MVPA4/10,
+                              LPA4_10min = LPA4/10,
+                              ST4_10min = ST4/10)
+
+FinalHC4 <- FinalHC4 |> mutate(FUDURATION = DOC_HC4 - DOC_HC3)
+
+
+FinalHC4 <- FinalHC4 |> mutate(TPAchange = (TPA4 - TPA3)/ FUDURATION,
+                               MVPAchange = (MVPA4 - MVPA3)/ FUDURATION,
+                               LPAchange = (LPA4 - LPA3)/ FUDURATION,
+                               STchange = (ST4 - ST3)/ FUDURATION,
+                               SEDBOUTchange = (SEDBOUT4 - SEDBOUT3)/ FUDURATION)
+
+summary(FinalHC4$TPAchange)
+
+```
+
+
+Description of HC4 participants
+```{R description}
+# How many participants had incident dementia
+xtabs(~ INC_DEMENTIA_VASCULAR + INC_DEMENTIA_AD + INC_DEMENTIA_OTH, FinalHC4)
+25/75*100
+xtabs(~ INC_DEMENTIA_ALL_NUM + I(HC4_FOLLOW_UP < 0), FinalHC4)
+
+# How many people had an unknown censor date
+xtabs(~ EOF_Y10TH, FinalHC4 == 0)
+14/1046*100
+(16+7+1+15+1+8)/75*100
+
+# How many people had negative follow-up
+FinalHC4 <- FinalHC4 |> filter(HC4_FOLLOW_UP > 0) # 18 people had negative follow-up i.e. had dementia prior to second accelerometer measure
+dim(FinalHC4)
+favstats(FinalHC4$HC4_FOLLOW_UP)
+
+# How many people were followed up for at least 4 years
+FinalHC4test <- FinalHC4 |> filter(HC4_FOLLOW_UP > 4)
+dim(FinalHC4test)
+945/1027*100
+
+# What was the median(IQR) duration between HC3 and HC4
+FinalHC4 <- FinalHC4 |> mutate(FUDURATION = DOC_HC4 - DOC_HC3)
+favstats(FinalHC4$FUDURATION)
+
+# What was the median(IQR) age
+favstats(FinalHC4$DOC_AGE_HC4)
+describe(FinalHC4$DOC_HC4)
+
+# What are the total person-years
+sum(FinalHC4$HC4_FOLLOW_UP)
+
+# How many people had accelerometer measures for seven days
+xtabs(~ VALID_DAYS_BOUTS_HC4, FinalHC4)
+```
+
+## Survival analysis
+```{R Survivor function}
+# Survivor function
+FinalHC4_Surv <- Surv(FinalHC4$HC4_FOLLOW_UP, FinalHC4$INC_DEMENTIA_ALL_NUM)
+
+# KM plot
+
+KM_Overall_FU <- survfit(FinalHC4_Surv ~ 1, data = FinalHC4)
+plot(KM_Overall_FU, xlab = 'Years',
+     ylab = 'Probability of survival (%)',
+     main = 'Kaplan-Meier survivor function',
+     mark.time=T, # tick marks at times when individuals are censored
+     yscale =100) # survival expressed as percentage rather than probability
+summary(KM_Overall_FU, times=c(1:20)) # probability of surviving up to year 17 is 83% (80.8 - 85.5% CI)
+```
+
+```{r Whole cohort survival analysis}
+
+# ==============================================================================
+#                               MODEL 1: UNADJUSTED
+# ==============================================================================
+
+# Model 1.1: Annual TPA change (cpm/year)
+
+Cox_TPAchange <- coxph(FinalHC4_Surv ~ TPAchange, data = FinalHC4)
+ACTPAzph <- cox.zph(Cox_TPAchange)
+plot(ACTPAzph)
+ACTPAzph # Schoenfield's residual non significant
+
+Cox_TPAchange.tbl <- tbl_regression(Cox_TPAchange, exponentiate = TRUE,
+                                    label = list(TPAchange = "TPA (cpm/year)"))
+
+# Model 1.2: Annual MVPA change (min/d/yr)
+
+Cox_MVPAchange <- coxph(FinalHC4_Surv ~ MVPAchange, data = FinalHC4)
+ACMVPAzph <- cox.zph(Cox_MVPAchange)
+plot(ACMVPAzph)
+ACMVPAzph # SR non-signif
+
+Cox_MVPAchange.tbl <- tbl_regression(Cox_MVPAchange, exponentiate = TRUE,
+                                    label = list(MVPAchange = "MVPA (min/d/yr)"))
+
+# Model 1.3: Annual LPA change (min/d/yr)
+Cox_LPAchange <- coxph(FinalHC4_Surv ~ LPAchange, data = FinalHC4)
+ACLPAzph <- cox.zph(Cox_LPAchange)
+plot(ACLPAzph)
+ACLPAzph # Significant (0.0056)
+
+Cox_LPAchange.tbl <- tbl_regression(Cox_LPAchange, exponentiate = TRUE,
+                                     label = list(LPAchange = "LPA (min/d/yr)"))
+
+# Model 1.4: Annual ST change (min/d/yr)
+Cox_STchange <- coxph(FinalHC4_Surv ~ STchange, data = FinalHC4)
+ACSTzph <- cox.zph(Cox_STchange)
+plot(ACSTzph)
+ACSTzph # Non-significant
+
+Cox_STchange.tbl <- tbl_regression(Cox_STchange, exponentiate = TRUE,
+                                    label = list(STchange = "ST (min/d/yr)"))
+
+# Model 1.5: Annual SEDBOUT change (min/d/yr)
+Cox_SEDBOUTchange <- coxph(FinalHC4_Surv ~ SEDBOUTchange, data = FinalHC4)
+ACSBzph <- cox.zph(Cox_SEDBOUTchange)
+plot(ACSBzph)
+ACSBzph # Non-significant
+
+Cox_SEDBOUTchange.tbl <- tbl_regression(Cox_SEDBOUTchange, exponentiate = TRUE,
+                                   label = list(SEDBOUTchange = "Sedentary bouts (min/d/yr)"))
+
+
+# Merged coxph table for MODEL 0: UNADJUSTED
+All_unadj_FU <- tbl_stack(
+  tbls = list(Cox_TPAchange.tbl,  Cox_MVPAchange.tbl,  Cox_LPAchange.tbl, Cox_STchange.tbl, Cox_SEDBOUTchange.tbl))|> 
+  bold_p(t = 0.05) |>  modify_header(label = "**Annual Physical Behaviour Change**")
+All_unadj_FU
+
+
+# ==============================================================================
+#                      MODEL 2: All Age and sex Adjusted 
+# ==============================================================================
+
+
+M2_TPA <- coxph(FinalHC4_Surv ~ TPAchange + FEMALE + DOC_AGE_HC4, data = FinalHC4)
+M2_TPA.tbl <- tbl_regression(M2_TPA, exponentiate = TRUE, include = "TPAchange",
+                             label = list(TPAchange = "TPA (cpm/year)"))
+                                    
+
+M2_MVPA <- coxph(FinalHC4_Surv ~ MVPAchange + FEMALE + DOC_AGE_HC4, data = FinalHC4)
+M2_MVPA.tbl <- tbl_regression(M2_MVPA, exponentiate = TRUE, include = "MVPAchange",
+                              label = list(MVPAchange = "MVPA (min/d/yr)"))
+
+
+M2_LPA <- coxph(FinalHC4_Surv ~ LPAchange + FEMALE + DOC_AGE_HC4, data = FinalHC4)
+M2_LPA.tbl <- tbl_regression(M2_LPA, exponentiate = TRUE, include = "LPAchange",
+                             label = list(LPAchange = "LPA (min/d/yr)"))
+
+
+M2_ST <- coxph(FinalHC4_Surv ~ STchange + FEMALE + DOC_AGE_HC4, data = FinalHC4)
+M2_ST.tbl <- tbl_regression(Cox_STchange, exponentiate = TRUE, include = "STchange",
+                                   label = list(STchange = "ST (min/d/yr)"))
+
+
+M2_SEDBOUT <- coxph(FinalHC4_Surv ~ SEDBOUTchange + FEMALE + DOC_AGE_HC4, data = FinalHC4)
+M2_SEDBOUT.tbl <- tbl_regression(Cox_SEDBOUTchange, exponentiate = TRUE, include = "SEDBOUTchange",
+                                        label = list(SEDBOUTchange = "Sedentary bouts (min/d/yr)"))
+
+
+All_age_sex.adj <- tbl_stack(
+  tbls = list(M2_TPA.tbl, M2_MVPA.tbl, M2_LPA.tbl, M2_ST.tbl, M2_SEDBOUT.tbl)
+) |>   bold_p(t = 0.05) |>  modify_header(label = "**Minimally Adjusted**")
+
+All_age_sex.adj
+
+# ==============================================================================
+#                     MODEL 3: All Covariate Adjusted 
+# ==============================================================================
+
+Disease_cols <- c("CA3", "DM3", "MI3", "CVA3")
+
+FinalHC4 <- FinalHC4 |> mutate(PREV_DISEASE = case_when(
+  if_any(all_of(Disease_cols), ~ .x == "Yes") ~ 1,
+  if_all(all_of(Disease_cols), is.na) ~ NA_real_,
+  TRUE ~ 0))
+
+FinalHC4$PREV_DISEASE <- ifelse(FinalHC4$PREV_DISEASE == 1, 1, 0)
+FinalHC4 <- FinalHC4 |> mutate(PREV_DISEASE = factor(PREV_DISEASE,
+                                                     levels = c(1,0),
+                                                     labels = c("Yes", "No")))
+
+#CIGSTAT3 removed because confidence intervals too wide
+covariates_list <- ~ FEMALE + DOC_AGE_HC4 + EDLEVEL09 + RETIRED3 + 
+                     URBANRURALSTATUS + UNITNOW3 + 
+                     MARITAL_STATUS3 + ALT_BMI_HC3 + BP2 + 
+                     HEARING_FU4 + PREV_DISEASE
+
+
+# Model 3.1: Annual TPA change (cpm/year)
+Cox_AdjTPAchange2 <- coxph(FinalHC4_Surv ~ TPAchange + 
+                             TPA3 +
+                             covariates_list, data = FinalHC4)
+
+Cox_AdjTPAchange2.tbl <- tbl_regression(Cox_AdjTPAchange2, exponentiate = TRUE, include = "TPAchange",
+                                    label = list(TPAchange = "TPA (cpm/year)"))
+
+# Model 2.2: Annual MVPA change (min/d/yr)
+Cox_AdjMVPAchange2 <- coxph(FinalHC4_Surv ~ MVPAchange + 
+                              MVPA3 +
+                             covariates_list, data = FinalHC4)
+
+Cox_AdjMVPAchange2.tbl <- tbl_regression(Cox_AdjMVPAchange2, exponentiate = TRUE, include = "MVPAchange",
+                                     label = list(MVPAchange = "MVPA (min/d/yr)"))
+summary(Cox_AdjMVPAchange2)
+
+# Model 2.3: Annual LPA change (min/d/yr)
+Cox_AdjLPAchange2 <- coxph(FinalHC4_Surv ~ LPAchange +
+                             LPA3 +
+                            covariates_list, data = FinalHC4)
+Cox_AdjLPAchange2.tbl <- tbl_regression(Cox_AdjLPAchange2, exponentiate = TRUE, include = "LPAchange",
+                                    label = list(LPAchange = "LPA (min/d/yr)"))
+
+# Model 2.4: Annual ST change (min/d/yr)
+Cox_AdjSTchange2 <- coxph(FinalHC4_Surv ~ STchange + 
+                            ST3 +
+                           covariates_list, data = FinalHC4)
+Cox_AdjSTchange2.tbl <- tbl_regression(Cox_AdjSTchange2, exponentiate = TRUE, include = "STchange",
+                                   label = list(STchange = "ST (min/d/yr)"))
+
+# Model 2.5: Annual SEDBOUT change (min/d/yr)
+Cox_AdjSEDBOUTchange2 <- coxph(FinalHC4_Surv ~ SEDBOUTchange + 
+                                 SEDBOUT3 +
+                                covariates_list, data = FinalHC4)
+
+Cox_AdjSEDBOUTchange2.tbl <- tbl_regression(Cox_AdjSEDBOUTchange2, exponentiate = TRUE, include = "SEDBOUTchange",
+                                        label = list(SEDBOUTchange = "Sedentary bouts (min/d/yr)"))
+
+# Merged coxph table for MODEL 2: Adjusted
+All_Adj2_FU <- tbl_stack(
+  tbls = list(Cox_AdjTPAchange2.tbl,  Cox_AdjMVPAchange2.tbl,  Cox_AdjLPAchange2.tbl, Cox_AdjSTchange2.tbl, Cox_AdjSEDBOUTchange2.tbl))|> 
+  bold_p(t = 0.05) |>  modify_header(label = "**Model 2 (All Covariate Adjusted): Annual Physical Behaviour Change**")
+All_Adj2_FU
+```
+
+Table for whole cohort Cox models
+```{R Whole cohort table}
+All_HC4cox.tbl <- tbl_merge(
+  tbls = list(All_unadj_FU, All_age_sex.adj, All_Adj2_FU),
+  tab_spanner = c("**Unadjusted**", "**Minimally Adjusted**", "**Fully Adjusted**") 
+)
+
+print(All_HC4cox.tbl)
+```
+
+###Sensitivity analysis
+```{r, excluding participants with dementia in first 2 years}
+FinalHC4_nodem2 <- FinalHC4 |> filter(!(INC_DEMENTIA_ALL_NUM == 1 & HC4_FOLLOW_UP <= 2))
+dim(FinalHC4_nodem2)
+
+# Survivor function = time, event
+FinalHC4_nodem2_Surv <- Surv(FinalHC4_nodem2$HC4_FOLLOW_UP, FinalHC4_nodem2$INC_DEMENTIA_ALL_NUM)
+FinalHC4_nodem2_Surv
+
+covariates_list_nodem2 <- ~ FEMALE + DOC_AGE_HC4 + EDLEVEL09 + RETIRED3 + 
+                            URBANRURALSTATUS + UNITNOW3 + 
+                            MARITAL_STATUS3 + ALT_BMI_HC3 + BP2 + 
+                            HEARING_FU4 + PREV_DISEASE
+
+# ==============================================================================
+# MODEL 1: UNADJUSTED (FinalHC4_nodem2)
+# ==============================================================================
+
+Cox_TPAchange_nodem2 <- coxph(FinalHC4_nodem2_Surv ~ TPAchange, data = FinalHC4_nodem2)
+Cox_TPAchange_nodem2.tbl <- tbl_regression(Cox_TPAchange_nodem2, exponentiate = TRUE,
+                                            label = list(TPAchange = "TPA (cpm/year)"))
+
+Cox_MVPAchange_nodem2 <- coxph(FinalHC4_nodem2_Surv ~ MVPAchange, data = FinalHC4_nodem2)
+Cox_MVPAchange_nodem2.tbl <- tbl_regression(Cox_MVPAchange_nodem2, exponentiate = TRUE,
+                                             label = list(MVPAchange = "MVPA (min/d/yr)"))
+
+Cox_LPAchange_nodem2 <- coxph(FinalHC4_nodem2_Surv ~ LPAchange, data = FinalHC4_nodem2)
+Cox_LPAchange_nodem2.tbl <- tbl_regression(Cox_LPAchange_nodem2, exponentiate = TRUE,
+                                            label = list(LPAchange = "LPA (min/d/yr)"))
+
+Cox_STchange_nodem2 <- coxph(FinalHC4_nodem2_Surv ~ STchange, data = FinalHC4_nodem2)
+Cox_STchange_nodem2.tbl <- tbl_regression(Cox_STchange_nodem2, exponentiate = TRUE,
+                                           label = list(STchange = "ST (min/d/yr)"))
+
+Cox_SEDBOUTchange_nodem2 <- coxph(FinalHC4_nodem2_Surv ~ SEDBOUTchange, data = FinalHC4_nodem2)
+Cox_SEDBOUTchange_nodem2.tbl <- tbl_regression(Cox_SEDBOUTchange_nodem2, exponentiate = TRUE,
+                                               label = list(SEDBOUTchange = "Sedentary bouts (min/d/yr)"))
+
+All_unadj_FU_nodem2 <- tbl_stack(
+  tbls = list(Cox_TPAchange_nodem2.tbl, Cox_MVPAchange_nodem2.tbl, Cox_LPAchange_nodem2.tbl, 
+              Cox_STchange_nodem2.tbl, Cox_SEDBOUTchange_nodem2.tbl)
+) |> bold_p(t = 0.05) |> modify_header(label = "**Annual Physical Behaviour Change**")
+
+
+# ==============================================================================
+# MODEL 2: AGE AND SEX ADJUSTED (FinalHC4_nodem2)
+# ==============================================================================
+
+M2_TPA_nodem2 <- coxph(FinalHC4_nodem2_Surv ~ TPAchange + FEMALE + DOC_AGE_HC4, data = FinalHC4_nodem2)
+M2_TPA_nodem2.tbl <- tbl_regression(M2_TPA_nodem2, exponentiate = TRUE, include = "TPAchange",
+                                     label = list(TPAchange = "TPA (cpm/year)"))
+
+M2_MVPA_nodem2 <- coxph(FinalHC4_nodem2_Surv ~ MVPAchange + FEMALE + DOC_AGE_HC4, data = FinalHC4_nodem2)
+M2_MVPA_nodem2.tbl <- tbl_regression(M2_MVPA_nodem2, exponentiate = TRUE, include = "MVPAchange",
+                                      label = list(MVPAchange = "MVPA (min/d/yr)"))
+
+M2_LPA_nodem2 <- coxph(FinalHC4_nodem2_Surv ~ LPAchange + FEMALE + DOC_AGE_HC4, data = FinalHC4_nodem2)
+M2_LPA_nodem2.tbl <- tbl_regression(M2_LPA_nodem2, exponentiate = TRUE, include = "LPAchange",
+                                     label = list(LPAchange = "LPA (min/d/yr)"))
+
+M2_ST_nodem2 <- coxph(FinalHC4_nodem2_Surv ~ STchange + FEMALE + DOC_AGE_HC4, data = FinalHC4_nodem2)
+M2_ST_nodem2.tbl <- tbl_regression(M2_ST_nodem2, exponentiate = TRUE, include = "STchange",
+                                    label = list(STchange = "ST (min/d/yr)"))
+
+M2_SEDBOUT_nodem2 <- coxph(FinalHC4_nodem2_Surv ~ SEDBOUTchange + FEMALE + DOC_AGE_HC4, data = FinalHC4_nodem2)
+M2_SEDBOUT_nodem2.tbl <- tbl_regression(M2_SEDBOUT_nodem2, exponentiate = TRUE, include = "SEDBOUTchange",
+                                         label = list(SEDBOUTchange = "Sedentary bouts (min/d/yr)"))
+
+All_age_sex_nodem2.adj <- tbl_stack(
+  tbls = list(M2_TPA_nodem2.tbl, M2_MVPA_nodem2.tbl, M2_LPA_nodem2.tbl, 
+              M2_ST_nodem2.tbl, M2_SEDBOUT_nodem2.tbl)
+) |> bold_p(t = 0.05) |> modify_header(label = "**Minimally Adjusted**")
+
+
+# ==============================================================================
+# MODEL 3: FULLY COVARIATE ADJUSTED + BASELINE VALUE (FinalHC4_nodem2)
+# ==============================================================================
+
+Cox_AdjTPAchange2_nodem2 <- coxph(update.formula(FinalHC4_nodem2_Surv ~ TPAchange + TPA3, covariates_list_nodem2), data = FinalHC4_nodem2)
+Cox_AdjTPAchange2_nodem2.tbl <- tbl_regression(Cox_AdjTPAchange2_nodem2, exponentiate = TRUE, include = "TPAchange",
+                                                label = list(TPAchange = "TPA (cpm/year)"))
+
+Cox_AdjMVPAchange2_nodem2 <- coxph(update.formula(FinalHC4_nodem2_Surv ~ MVPAchange + MVPA3, covariates_list_nodem2), data = FinalHC4_nodem2)
+Cox_AdjMVPAchange2_nodem2.tbl <- tbl_regression(Cox_AdjMVPAchange2_nodem2, exponentiate = TRUE, include = "MVPAchange",
+                                                 label = list(MVPAchange = "MVPA (min/d/yr)"))
+
+Cox_AdjLPAchange2_nodem2 <- coxph(update.formula(FinalHC4_nodem2_Surv ~ LPAchange + LPA3, covariates_list_nodem2), data = FinalHC4_nodem2)
+Cox_AdjLPAchange2_nodem2.tbl <- tbl_regression(Cox_AdjLPAchange2_nodem2, exponentiate = TRUE, include = "LPAchange",
+                                                label = list(LPAchange = "LPA (min/d/yr)"))
+
+Cox_AdjSTchange2_nodem2 <- coxph(update.formula(FinalHC4_nodem2_Surv ~ STchange + ST3, covariates_list_nodem2), data = FinalHC4_nodem2)
+Cox_AdjSTchange2_nodem2.tbl <- tbl_regression(Cox_AdjSTchange2_nodem2, exponentiate = TRUE, include = "STchange",
+                                               label = list(STchange = "ST (min/d/yr)"))
+
+Cox_AdjSEDBOUTchange2_nodem2 <- coxph(update.formula(FinalHC4_nodem2_Surv ~ SEDBOUTchange + SEDBOUT3, covariates_list_nodem2), data = FinalHC4_nodem2)
+Cox_AdjSEDBOUTchange2_nodem2.tbl <- tbl_regression(Cox_AdjSEDBOUTchange2_nodem2, exponentiate = TRUE, include = "SEDBOUTchange",
+                                                    label = list(SEDBOUTchange = "Sedentary bouts (min/d/yr)"))
+
+All_Adj2_FU_nodem2 <- tbl_stack(
+  tbls = list(Cox_AdjTPAchange2_nodem2.tbl, Cox_AdjMVPAchange2_nodem2.tbl, Cox_AdjLPAchange2_nodem2.tbl, 
+              Cox_AdjSTchange2_nodem2.tbl, Cox_AdjSEDBOUTchange2_nodem2.tbl)
+) |> bold_p(t = 0.05) |> modify_header(label = "**Fully Adjusted**")
+
+
+# ==============================================================================
+# MERGED SUMMARY TABLE (FinalHC4_nodem2)
+# ==============================================================================
+All_HC4_nodem2_cox.tbl <- tbl_merge(
+  tbls = list(All_unadj_FU_nodem2, All_age_sex_nodem2.adj, All_Adj2_FU_nodem2),
+  tab_spanner = c("**Unadjusted**", "**Minimally Adjusted**", "**Fully Adjusted**") 
+) |> modify_header(label = "Annual Physical Behaviour Change (Excl. <2yr Dementia)")
+
+print(All_HC4_nodem2_cox.tbl)
+```
+
+### Sensitivity analysis: excluding participants with dementia in first 5 years
+```{r, excluding participants with dementia in first 5 years}
+FinalHC4_nodem5 <- FinalHC4 |> filter(!(INC_DEMENTIA_ALL_NUM == 1 & HC4_FOLLOW_UP <= 5))
+dim(FinalHC4_nodem5)
+
+# Survivor function = time, event
+FinalHC4_nodem5_Surv <- Surv(FinalHC4_nodem5$HC4_FOLLOW_UP, FinalHC4_nodem5$INC_DEMENTIA_ALL_NUM)
+FinalHC4_nodem5_Surv
+
+covariates_list_nodem5 <- ~ FEMALE + DOC_AGE_HC4 + EDLEVEL09 + RETIRED3 + 
+                            URBANRURALSTATUS + UNITNOW3 + 
+                            MARITAL_STATUS3 + ALT_BMI_HC3 + BP2 + 
+                            HEARING_FU4 + PREV_DISEASE
+
+# ==============================================================================
+# MODEL 1: UNADJUSTED (FinalHC4_nodem5)
+# ==============================================================================
+
+Cox_TPAchange_nodem5 <- coxph(FinalHC4_nodem5_Surv ~ TPAchange, data = FinalHC4_nodem5)
+Cox_TPAchange_nodem5.tbl <- tbl_regression(Cox_TPAchange_nodem5, exponentiate = TRUE,
+                                            label = list(TPAchange = "TPA (cpm/year)"))
+
+Cox_MVPAchange_nodem5 <- coxph(FinalHC4_nodem5_Surv ~ MVPAchange, data = FinalHC4_nodem5)
+Cox_MVPAchange_nodem5.tbl <- tbl_regression(Cox_MVPAchange_nodem5, exponentiate = TRUE,
+                                             label = list(MVPAchange = "MVPA (min/d/yr)"))
+
+Cox_LPAchange_nodem5 <- coxph(FinalHC4_nodem5_Surv ~ LPAchange, data = FinalHC4_nodem5)
+Cox_LPAchange_nodem5.tbl <- tbl_regression(Cox_LPAchange_nodem5, exponentiate = TRUE,
+                                            label = list(LPAchange = "LPA (min/d/yr)"))
+
+Cox_STchange_nodem5 <- coxph(FinalHC4_nodem5_Surv ~ STchange, data = FinalHC4_nodem5)
+Cox_STchange_nodem5.tbl <- tbl_regression(Cox_STchange_nodem5, exponentiate = TRUE,
+                                           label = list(STchange = "ST (min/d/yr)"))
+
+Cox_SEDBOUTchange_nodem5 <- coxph(FinalHC4_nodem5_Surv ~ SEDBOUTchange, data = FinalHC4_nodem5)
+Cox_SEDBOUTchange_nodem5.tbl <- tbl_regression(Cox_SEDBOUTchange_nodem5, exponentiate = TRUE,
+                                               label = list(SEDBOUTchange = "Sedentary bouts (min/d/yr)"))
+
+All_unadj_FU_nodem5 <- tbl_stack(
+  tbls = list(Cox_TPAchange_nodem5.tbl, Cox_MVPAchange_nodem5.tbl, Cox_LPAchange_nodem5.tbl, 
+              Cox_STchange_nodem5.tbl, Cox_SEDBOUTchange_nodem5.tbl)
+) |> bold_p(t = 0.05) |> modify_header(label = "**Annual Physical Behaviour Change**")
+
+
+# ==============================================================================
+# MODEL 2: AGE AND SEX ADJUSTED (FinalHC4_nodem5)
+# ==============================================================================
+
+M2_TPA_nodem5 <- coxph(FinalHC4_nodem5_Surv ~ TPAchange + FEMALE + DOC_AGE_HC4, data = FinalHC4_nodem5)
+M2_TPA_nodem5.tbl <- tbl_regression(M2_TPA_nodem5, exponentiate = TRUE, include = "TPAchange",
+                                     label = list(TPAchange = "TPA (cpm/year)"))
+
+M2_MVPA_nodem5 <- coxph(FinalHC4_nodem5_Surv ~ MVPAchange + FEMALE + DOC_AGE_HC4, data = FinalHC4_nodem5)
+M2_MVPA_nodem5.tbl <- tbl_regression(M2_MVPA_nodem5, exponentiate = TRUE, include = "MVPAchange",
+                                      label = list(MVPAchange = "MVPA (min/d/yr)"))
+
+M2_LPA_nodem5 <- coxph(FinalHC4_nodem5_Surv ~ LPAchange + FEMALE + DOC_AGE_HC4, data = FinalHC4_nodem5)
+M2_LPA_nodem5.tbl <- tbl_regression(M2_LPA_nodem5, exponentiate = TRUE, include = "LPAchange",
+                                     label = list(LPAchange = "LPA (min/d/yr)"))
+
+M2_ST_nodem5 <- coxph(FinalHC4_nodem5_Surv ~ STchange + FEMALE + DOC_AGE_HC4, data = FinalHC4_nodem5)
+M2_ST_nodem5.tbl <- tbl_regression(M2_ST_nodem5, exponentiate = TRUE, include = "STchange",
+                                    label = list(STchange = "ST (min/d/yr)"))
+
+M2_SEDBOUT_nodem5 <- coxph(FinalHC4_nodem5_Surv ~ SEDBOUTchange + FEMALE + DOC_AGE_HC4, data = FinalHC4_nodem5)
+M2_SEDBOUT_nodem5.tbl <- tbl_regression(M2_SEDBOUT_nodem5, exponentiate = TRUE, include = "SEDBOUTchange",
+                                         label = list(SEDBOUTchange = "Sedentary bouts (min/d/yr)"))
+
+All_age_sex_nodem5.adj <- tbl_stack(
+  tbls = list(M2_TPA_nodem5.tbl, M2_MVPA_nodem5.tbl, M2_LPA_nodem5.tbl, 
+              M2_ST_nodem5.tbl, M2_SEDBOUT_nodem5.tbl)
+) |> bold_p(t = 0.05) |> modify_header(label = "**Minimally Adjusted**")
+
+
+# ==============================================================================
+# MODEL 3: FULLY COVARIATE ADJUSTED + BASELINE VALUE (FinalHC4_nodem5)
+# ==============================================================================
+
+Cox_AdjTPAchange2_nodem5 <- coxph(update.formula(FinalHC4_nodem5_Surv ~ TPAchange + TPA3, covariates_list_nodem5), data = FinalHC4_nodem5)
+Cox_AdjTPAchange2_nodem5.tbl <- tbl_regression(Cox_AdjTPAchange2_nodem5, exponentiate = TRUE, include = "TPAchange",
+                                                label = list(TPAchange = "TPA (cpm/year)"))
+
+Cox_AdjMVPAchange2_nodem5 <- coxph(update.formula(FinalHC4_nodem5_Surv ~ MVPAchange + MVPA3, covariates_list_nodem5), data = FinalHC4_nodem5)
+Cox_AdjMVPAchange2_nodem5.tbl <- tbl_regression(Cox_AdjMVPAchange2_nodem5, exponentiate = TRUE, include = "MVPAchange",
+                                                 label = list(MVPAchange = "MVPA (min/d/yr)"))
+
+Cox_AdjLPAchange2_nodem5 <- coxph(update.formula(FinalHC4_nodem5_Surv ~ LPAchange + LPA3, covariates_list_nodem5), data = FinalHC4_nodem5)
+Cox_AdjLPAchange2_nodem5.tbl <- tbl_regression(Cox_AdjLPAchange2_nodem5, exponentiate = TRUE, include = "LPAchange",
+                                                label = list(LPAchange = "LPA (min/d/yr)"))
+
+Cox_AdjSTchange2_nodem5 <- coxph(update.formula(FinalHC4_nodem5_Surv ~ STchange + ST3, covariates_list_nodem5), data = FinalHC4_nodem5)
+Cox_AdjSTchange2_nodem5.tbl <- tbl_regression(Cox_AdjSTchange2_nodem5, exponentiate = TRUE, include = "STchange",
+                                               label = list(STchange = "ST (min/d/yr)"))
+
+Cox_AdjSEDBOUTchange2_nodem5 <- coxph(update.formula(FinalHC4_nodem5_Surv ~ SEDBOUTchange + SEDBOUT3, covariates_list_nodem5), data = FinalHC4_nodem5)
+Cox_AdjSEDBOUTchange2_nodem5.tbl <- tbl_regression(Cox_AdjSEDBOUTchange2_nodem5, exponentiate = TRUE, include = "SEDBOUTchange",
+                                                    label = list(SEDBOUTchange = "Sedentary bouts (min/d/yr)"))
+
+All_Adj2_FU_nodem5 <- tbl_stack(
+  tbls = list(Cox_AdjTPAchange2_nodem5.tbl, Cox_AdjMVPAchange2_nodem5.tbl, Cox_AdjLPAchange2_nodem5.tbl, 
+              Cox_AdjSTchange2_nodem5.tbl, Cox_AdjSEDBOUTchange2_nodem5.tbl)
+) |> bold_p(t = 0.05) |> modify_header(label = "**Fully Adjusted**")
+
+
+# ==============================================================================
+# MERGED SUMMARY TABLE (FinalHC4_nodem5)
+# ==============================================================================
+All_HC4_nodem5_cox.tbl <- tbl_merge(
+  tbls = list(All_unadj_FU_nodem5, All_age_sex_nodem5.adj, All_Adj2_FU_nodem5),
+  tab_spanner = c("**Unadjusted**", "**Minimally Adjusted**", "**Fully Adjusted**") 
+) |> modify_header(label = "Annual Physical Behaviour Change (Excl. <5yr Dementia)")
+
+print(All_HC4_nodem5_cox.tbl)
+```
+
