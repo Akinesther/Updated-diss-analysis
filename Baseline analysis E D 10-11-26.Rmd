@@ -1,0 +1,691 @@
+---
+title: "Physical Behaviour and Incident Dementia: an EPIC-Norfolk Analysis"
+subtitle: "Exploratory analysis: file 2/3"
+author: "Epidemiology7335"
+date: "2026-11-10"
+output:
+  html_document:
+  theme: spacelab
+code_download: true
+code_folding: show
+toc: true
+toc_float: true
+pdf_document:
+  toc: true
+---
+```{r}
+
+knitr::opts_chunk$set(
+  echo = TRUE,
+  cache = TRUE,
+  results = "hide",
+  warning = FALSE,
+  message = FALSE
+)
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  cache = TRUE,
+  results = "hide"
+)
+if("librarian" %in% installed.packages()==FALSE) install.packages(c("librarian"))
+librarian::shelf(
+  knitr, prettydoc, dplyr, readr, gtsummary, tidyr, 
+  naniar, mice, ggplot2, survival, flexsurv, 
+  powerSurvEpi, psych, mosaic, ranger, 
+  gt, mice, car, broom)
+```
+
+## Epic-Norfolk analysis code: Physical Behaviour and Dementia
+
+### Baseline analysis
+
+Descriptive statistics for HC3 participants
+
+```{r description of HC3 participants}
+#What are the total person-years?
+sum(FinalHC3$HC3_FOLLOW_UP)
+
+#What is the follow-up distribution
+favstats(~ HC3_FOLLOW_UP, data = FinalHC3)
+boxplot(FinalHC3$HC3_FOLLOW_UP)
+
+# How many participants have > 10 years of follow-up
+sum(FinalHC3$HC3_FOLLOW_UP >= 10)
+1807/2320*100 # 78%
+
+# What is the age distribution?
+favstats(~ DOC_AGE_HC3, data = FinalHC3)
+describe(FinalHC3$DOC_HC3)
+
+# How many people had accelerometer measures for seven days?
+xtabs(~ VALID_DAYS_BOUTS_HC3, FinalHC3)
+
+# What are the total incident dementia cases?
+FinalHC3 |> filter(if_any(c(INC_DEMENTIA_AD, INC_DEMENTIA_VASCULAR, INC_DEMENTIA_OTH,INC_DEMENTIA_ALL), ~ .x==1)) |> 
+  summarise (Unique_Dementia_Cases = n_distinct(RELEASEID))
+xtabs(~ INC_DEMENTIA_VASCULAR + INC_DEMENTIA_AD + INC_DEMENTIA_OTH, FinalHC3)
+```
+
+Physical behaviour descriptions
+
+```{r distribution of PB variables}
+# Total Physical Activity (TPA)
+hist(FinalHC3$TPA) # Positive skew
+favstats(FinalHC3$TPA)
+
+# Moderate-to-vigorous Physical Activity (MVPA)
+hist(FinalHC3$MVPA) # Positive skew
+favstats(FinalHC3$MVPA)
+
+# Light Physical Activity (LPA)
+hist(FinalHC3$LPA) # Normally distributed
+favstats(FinalHC3$LPA)
+
+# Sedentary time
+hist(FinalHC3$ST) # Normally distributed
+favstats(FinalHC3$ST)
+
+# Sedentary bout time
+hist(FinalHC3$SEDBOUT)
+favstats(FinalHC3$SEDBOUT)
+
+# Number of people achieving more than 150 mins MVPA a week? (extrapolating)
+FinalHC3 <- FinalHC3 |> mutate(weeklyMVPA = MVPA*7)
+favstats(FinalHC3$weeklyMVPA)
+
+FinalHC3recomm <- FinalHC3 |> filter(weeklyMVPA >= 150)
+dim(FinalHC3recomm)
+```
+
+HC3 datasets by sex
+```{r datasets by sex}
+FinalHC3_F <- FinalHC3[FinalHC3$FEMALE == 1,]
+dim(FinalHC3_F)
+xtabs(~ INC_DEMENTIA_ALL_NUM, FinalHC3_F)
+
+FinalHC3_M <- FinalHC3[FinalHC3$FEMALE== 0,]
+dim(FinalHC3_M)
+xtabs(~ INC_DEMENTIA_ALL_NUM, FinalHC3_M)
+```
+
+Table of baseline physical behaviour (n = 2320)
+```{r HC3 PB table}
+# Exposure variables of interest
+HC3Exp <- c("TPA",
+            "MVPA",
+            "LPA",
+            "ST",
+            "SEDBOUT")
+
+HC3Explabels <- list(TPA = "TPA (cpm)",
+                     MVPA = "MVPA (min/day)",
+                     LPA = "LPA (min/day)",
+                     ST = "Total sedentary time (min/day)",
+                     SEDBOUT = "Prolonged sedentary time (min/day)")
+
+hc3_PB.tbl <- FinalHC3 |>
+  tbl_summary(
+    include = HC3Exp,
+    by = INC_DEMENTIA_ALL,
+    missing = "ifany",
+    statistic = list(all_continuous() ~ "{mean}, ({sd})"),
+    label = HC3Explabels
+  ) |> add_p() |> bold_p(t = 0.05) |>
+  modify_caption("**Table. Baseline Participant Physical behaviour by Dementia Outcome**")
+print(hc3_PB.tbl)
+```
+
+## Survival analysis
+
+### Whole cohort
+
+Creating survival function
+```{r, include = FALSE}
+# Survival in the overall cohort
+dim(FinalHC3)
+str(FinalHC3)
+
+# Survivor function = time, event
+
+FinalHC3_Surv <- Surv(FinalHC3$HC3_FOLLOW_UP, FinalHC3$INC_DEMENTIA_ALL_NUM)
+FinalHC3_Surv
+
+FinalHC3DEM <- FinalHC3 |> filter(INC_DEMENTIA_ALL_NUM == 1)
+colnames(FinalHC3DEM)
+describe(FinalHC3DEM$EOF_Y10TH)
+
+FinalHC3DEM <- FinalHC3DEM |> mutate(AGE_AT_DIAGNOSIS = DOC_AGE_HC3 + HC3_FOLLOW_UP)
+favstats(FinalHC3DEM$AGE_AT_DIAGNOSIS)
+
+# KM PLOT FOR WHOLE COHORT
+
+KM_Overall <- survfit(FinalHC3_Surv ~ 1, data = FinalHC3)
+plot(KM_Overall, xlab = 'Years',
+     ylab = 'Probability of survival (%)',
+     main = 'Kaplan-Meier survivor function',
+     mark.time=T, # tick marks at times when individuals are censored
+     yscale =100) # survival expressed as percentrage rather than probability
+summary(KM_Overall, times=c(1:20)) # probability of surviving up to year 17 is 83% (80.8 - 85.5% CI)
+```
+
+Unadjusted; Minimally adjusted; Fully adjusted Cox Models
+```{r Whole cohort survival analysis}
+
+# ==============================================================================
+#               COX PH: PHYSICAL BEHAVIOUR FOR ALL PARTICIPANTS
+# ==============================================================================
+
+# ==============================================================================
+# MODEL 1: UNADJUSTED
+# ==============================================================================
+
+# ===================
+# TPA (cpm)
+# ===================
+Cox_TPA <- coxph(FinalHC3_Surv ~ TPA, data = FinalHC3)
+Cox_TPA.tbl <- tbl_regression(Cox_TPA, exponentiate = TRUE,
+                              label = list(TPA = "TPA (cpm)"))
+summary(Cox_TPA)
+TPAzph <- cox.zph(Cox_TPA)
+TPAzph
+plot(TPAzph)
+
+# ===================
+# MVPA 10min/daily
+# ===================
+Cox_MVPA10 <- coxph(FinalHC3_Surv ~ MVPA_10min, data = FinalHC3)
+Cox_MVPA10.tbl  <- tbl_regression(Cox_MVPA10, exponentiate = TRUE,
+                                  label = list(MVPA_10min = "MVPA (10 min/d)"))
+MVPAzph <- cox.zph(Cox_MVPA10)
+MVPAzph
+plot(MVPAzph)
+
+# ===================
+# LPA 10min/daily
+# ===================
+Cox_LPA10 <- coxph(FinalHC3_Surv ~ LPA_10min, data = FinalHC3)
+Cox_LPA10.tbl  <- tbl_regression(Cox_LPA10, exponentiate = TRUE,
+                                 label = list(LPA_10min = "LPA (10 min/d)"))
+LPAzph <- cox.zph(Cox_LPA10)
+LPAzph
+plot(LPAzph)
+
+# ===================
+# Sed time 10min/daily
+# ===================
+Cox_ST10 <- coxph(FinalHC3_Surv ~ ST_10min, data = FinalHC3)
+Cox_ST10.tbl  <- tbl_regression(Cox_ST10, exponentiate = TRUE,
+                                label = list(ST_10min = "Sedentary time (10 min/d)"))
+STzph <- cox.zph(Cox_ST10)
+STzph
+plot(STzph)
+
+# ===================
+# Bouts of sedentary time over 30 mins
+# ===================
+Cox_SB <- coxph(FinalHC3_Surv ~ SEDBOUT, FinalHC3)
+Cox_SB.tbl  <- tbl_regression(Cox_SB, exponentiate = TRUE,
+                              label = list(SEDBOUT = "Sedentary bout time (min)"))
+summary(Cox_SB)
+SBzph <- cox.zph(Cox_SB)
+plot(SBzph)
+
+# Merged coxph table for MODEL 0: UNADJUSTED
+All_unadj <- tbl_stack(
+  tbls = list(Cox_TPA.tbl,  Cox_MVPA10.tbl,  Cox_LPA10.tbl, Cox_ST10.tbl,  Cox_SB.tbl))|> 
+  bold_p(t = 0.05) |>  modify_header(label = "**Physical Behaviour (Increment)**")
+All_unadj
+
+# ==============================================================================
+# MODEL 2: AGE and SEX ADJUSTED 
+# ==============================================================================
+
+# TPA (cpm)
+Cox_TPA.1 <- coxph(FinalHC3_Surv ~ TPA + DOC_AGE_HC3 + FEMALE, data = FinalHC3)
+Cox_TPA.1.tbl <- tbl_regression(Cox_TPA.1, exponentiate = TRUE, include = "TPA",
+                                label = list(TPA = "TPA (cpm)"))
+
+# MVPA (10min/daily)
+Cox_MVPA10.1 <- coxph(FinalHC3_Surv ~ MVPA_10min + DOC_AGE_HC3 + FEMALE, data = FinalHC3)
+Cox_MVPA10.1.tbl  <- tbl_regression(Cox_MVPA10.1, exponentiate = TRUE, include = "MVPA_10min",
+                                    label = list(MVPA_10min = "MVPA (10 min/d)"))
+
+# LPA (10min/daily)
+Cox_LPA10.1 <- coxph(FinalHC3_Surv ~ LPA_10min + DOC_AGE_HC3 + FEMALE, data = FinalHC3)
+Cox_LPA10.1.tbl  <- tbl_regression(Cox_LPA10.1, exponentiate = TRUE, include = "LPA_10min",
+                                   label = list(LPA_10min = "LPA (10 min/d)"))
+
+# Sedentary time (10min/daily)
+Cox_ST10.1 <- coxph(FinalHC3_Surv ~ ST_10min + DOC_AGE_HC3 + FEMALE, data = FinalHC3)
+Cox_ST10.1.tbl  <- tbl_regression(Cox_ST10.1, exponentiate = TRUE, include = "ST_10min",
+                                  label = list(ST_10min = "Sedentary time (10 min/d)"))
+
+# Sed bout time (min)
+Cox_SB.1 <- coxph(FinalHC3_Surv ~ SEDBOUT + DOC_AGE_HC3 + FEMALE, FinalHC3)
+Cox_SB.1.tbl  <- tbl_regression(Cox_SB.1, exponentiate = TRUE, include = "SEDBOUT",
+                                label = list(SEDBOUT = "Sedentary bout time (min)"))
+summary(Cox_SB.1)
+
+# Merged tables for MODEL 1: AGE and SEX ADJUSTED
+All_age_sex.adj <- tbl_stack(
+  tbls = list(Cox_TPA.1.tbl , Cox_MVPA10.1.tbl, Cox_LPA10.1.tbl, Cox_ST10.1.tbl, Cox_SB.1.tbl)
+) |>   bold_p(t = 0.05) 
+All_age_sex.adj
+
+# ==============================================================================
+# MODEL 3: ALL COVARIATE ADJUSTED 
+# ==============================================================================
+covariates_list <- ~ FEMALE + DOC_AGE_HC3 + EDLEVEL09 + RETIRED3 + 
+                     URBANRURALSTATUS + CIGSTAT3 + UNITNOW3 + 
+                     MARITAL_STATUS3 + ALT_BMI_HC3 + BP2 + 
+                     HEARING_FU4 + PREV_DISEASE
+
+# TPA Model and Table
+Cox_TPA.cov <- coxph(FinalHC3_Surv ~ TPA + 
+                       covariates_list, data = FinalHC3)
+Cox_TPA.cov.tbl <- tbl_regression(Cox_TPA.cov, exponentiate = TRUE, 
+                                  include = "TPA",
+                                  label = list(TPA = "TPA (cpm)"))
+
+# MVPA 10min/d Model and Table
+Cox_MVPA10.cov <- coxph(FinalHC3_Surv ~ MVPA_10min + 
+                          covariates_list,
+                        data = FinalHC3)
+table_mvpa10_cov <- tbl_regression(
+  Cox_MVPA10.cov, 
+  exponentiate = TRUE, include = "MVPA_10min", label = list(MVPA_10min = "MVPA (10 min/d)")
+)
+
+# LPA 10min/d
+Cox_LPA10.cov <- coxph(FinalHC3_Surv ~ LPA_10min + 
+                         covariates_list, data = FinalHC3)
+table_lpa10_cov <- tbl_regression(
+  Cox_LPA10.cov, 
+  exponentiate = TRUE, 
+  include = "LPA_10min",
+  label = list(LPA_10min = "LPA (10 min/d)")
+)
+
+# SED TIME 10min/d
+Cox_ST10.cov <- coxph(FinalHC3_Surv ~ ST_10min + 
+                        covariates_list, data = FinalHC3)
+table_st10_cov <- tbl_regression(
+  Cox_ST10.cov, 
+  exponentiate = TRUE, 
+  include = "ST_10min",
+  label = list(ST_10min = "Sedentary time (10 min/d)")
+)
+
+# SEDBOUT 10min/d
+Cox_SB.cov <- coxph(FinalHC3_Surv ~ SEDBOUT + 
+                      covariates_list, data = FinalHC3)
+
+table_sb_cov <- tbl_regression(
+  Cox_SB.cov, 
+  exponentiate = TRUE, 
+  include = "SEDBOUT",
+  label = list(SEDBOUT = "Sedentary bout time (min)")
+)
+
+final_exposure_table_cov <- tbl_stack(
+  tbls = list(Cox_TPA.cov.tbl,
+              table_mvpa10_cov, 
+              table_lpa10_cov, 
+              table_st10_cov,
+              table_sb_cov)
+) |>   bold_p(t = 0.05) 
+
+final_exposure_table_cov
+```
+
+Table for whole cohort Cox models 1, 2, 3
+```{r Whole cohort table}
+All_HC3cox.tbl <- tbl_merge(
+  tbls = list(All_unadj, All_age_sex.adj, final_exposure_table_cov),
+  tab_spanner = c("**Unadjusted**", "**Minimally Adjusted**", "**Fully Adjusted**") 
+) |> modify_header(label = "Baseline Physical Behaviour") |> as_gt() |>
+  tab_options(table.font.size = pct(80))
+print(All_HC3cox.tbl)
+```
+
+###Sensitivity analysis: Model 3 + adjustment for other physical behaviours
+```{r, include = FALSE}
+# ==============================================================================
+# MODEL 4: ALL COVARIATE ADJUSTED + other physical behaviours
+# ==============================================================================
+
+covariates_list <- ~ FEMALE + DOC_AGE_HC3 + EDLEVEL09 + RETIRED3 + 
+                     URBANRURALSTATUS + CIGSTAT3 + UNITNOW3 + 
+                     MARITAL_STATUS3 + ALT_BMI_HC3 + BP2 + 
+                     HEARING_FU4 + PREV_DISEASE
+
+# MVPA 10min/d Model and Table
+Cox_MVPA10.cov2 <- coxph(FinalHC3_Surv ~ MVPA_10min + 
+                          LPA_10min + 
+                          ST_10min +
+                          covariates_list,
+                        data = FinalHC3)
+
+table_mvpa10_cov2 <- tbl_regression(
+  Cox_MVPA10.cov2, 
+  exponentiate = TRUE, include = "MVPA_10min", label = list(MVPA_10min = "MVPA (10 min/d)")
+)
+
+# LPA 10min/d
+Cox_LPA10.cov2 <- coxph(FinalHC3_Surv ~ LPA_10min + 
+                         MVPA_10min +
+                         ST_10min +
+                         covariates_list, data = FinalHC3)
+table_lpa10_cov2 <- tbl_regression(
+  Cox_LPA10.cov2, 
+  exponentiate = TRUE, 
+  include = "LPA_10min",
+  label = list(LPA_10min = "LPA (10 min/d)")
+)
+
+# SED TIME 10min/d
+Cox_ST10.cov2 <- coxph(FinalHC3_Surv ~ ST_10min + 
+                        MVPA_10min +
+                        LPA_10min +
+                        covariates_list, data = FinalHC3)
+table_st10_cov2 <- tbl_regression(
+  Cox_ST10.cov2, 
+  exponentiate = TRUE, 
+  include = "ST_10min",
+  label = list(ST_10min = "Sedentary time (10 min/d)")
+)
+
+
+# SEDBOUT 10min/d
+Cox_SB.cov2 <- coxph(FinalHC3_Surv ~ SEDBOUT + 
+                      MVPA_10min +
+                      LPA_10min +
+                      ST_10min +
+                      covariates_list, data = FinalHC3)
+
+table_sb_cov2 <- tbl_regression(
+  Cox_SB.cov2, 
+  exponentiate = TRUE, 
+  include = "SEDBOUT",
+  label = list(SEDBOUT = "Sedentary bout time (min)")
+)
+
+final_exposure_table_cov2 <- tbl_stack(
+  tbls = list(table_mvpa10_cov2, 
+              table_lpa10_cov2, 
+              table_st10_cov2,
+              table_sb_cov2)
+) |>   bold_p(t = 0.05) 
+
+final_exposure_table_cov2
+```
+
+###Sensitivity analysis: excluding participants with dementia in first 2 years
+```{r, Excluding those with dementia in first 2 years}
+FinalHC3_nodem2 <- FinalHC3 |> filter(!(INC_DEMENTIA_ALL_NUM == 1 & HC3_FOLLOW_UP <= 2))
+dim(FinalHC3_nodem2)
+
+# Survivor function = time, event
+FinalHC3_nodem2_Surv <- Surv(FinalHC3_nodem2$HC3_FOLLOW_UP, FinalHC3_nodem2$INC_DEMENTIA_ALL_NUM)
+FinalHC3_nodem2_Surv
+
+
+# ==============================================================================
+# MODEL 1: UNADJUSTED
+# ==============================================================================
+
+# TPA (cpm)
+model1_tpa <- coxph(FinalHC3_nodem2_Surv ~ TPA, data = FinalHC3_nodem2)
+table1_tpa <- tbl_regression(model1_tpa, exponentiate = TRUE,
+                             label = list(TPA = "TPA (cpm)"))
+
+# MVPA (10 min/daily)
+model1_mvpa10 <- coxph(FinalHC3_nodem2_Surv ~ MVPA_10min, data = FinalHC3_nodem2)
+table1_mvpa10 <- tbl_regression(model1_mvpa10, exponentiate = TRUE,
+                                label = list(MVPA_10min = "MVPA (10 min/d)"))
+
+# LPA (10 min/daily)
+model1_lpa10 <- coxph(FinalHC3_nodem2_Surv ~ LPA_10min, data = FinalHC3_nodem2)
+table1_lpa10 <- tbl_regression(model1_lpa10, exponentiate = TRUE,
+                               label = list(LPA_10min = "LPA (10 min/d)"))
+
+# Sedentary time (10 min/daily)
+model1_st10 <- coxph(FinalHC3_nodem2_Surv ~ ST_10min, data = FinalHC3_nodem2)
+table1_st10 <- tbl_regression(model1_st10, exponentiate = TRUE,
+                              label = list(ST_10min = "Sedentary time (10 min/d)"))
+
+# Sedentary bout time (>30 mins)
+model1_sb <- coxph(FinalHC3_nodem2_Surv ~ SEDBOUT, data = FinalHC3_nodem2)
+table1_sb <- tbl_regression(model1_sb, exponentiate = TRUE,
+                            label = list(SEDBOUT = "Sedentary bout time (min)"))
+
+# Merged table for MODEL 1: UNADJUSTED
+table_unadjusted_merged <- tbl_stack(
+  tbls = list(table1_tpa, table1_mvpa10, table1_lpa10, table1_st10, table1_sb)
+) |>  
+  bold_p(t = 0.05) |>  
+  modify_header(label = "**Physical Behaviour (Increment)**")
+table_unadjusted_merged
+
+
+# ==============================================================================
+# MODEL 2: AGE AND SEX ADJUSTED 
+# ==============================================================================
+
+model2_tpa <- coxph(FinalHC3_nodem2_Surv ~ TPA + DOC_AGE_HC3 + FEMALE, data = FinalHC3_nodem2)
+table2_tpa <- tbl_regression(model2_tpa, exponentiate = TRUE, include = "TPA",
+                             label = list(TPA = "TPA (cpm)"))
+
+model2_mvpa10 <- coxph(FinalHC3_nodem2_Surv ~ MVPA_10min + DOC_AGE_HC3 + FEMALE, data = FinalHC3_nodem2)
+table2_mvpa10 <- tbl_regression(model2_mvpa10, exponentiate = TRUE, include = "MVPA_10min",
+                                label = list(MVPA_10min = "MVPA (10 min/d)"))
+
+model2_lpa10 <- coxph(FinalHC3_nodem2_Surv ~ LPA_10min + DOC_AGE_HC3 + FEMALE, data = FinalHC3_nodem2)
+table2_lpa10 <- tbl_regression(model2_lpa10, exponentiate = TRUE, include = "LPA_10min",
+                               label = list(LPA_10min = "LPA (10 min/d)"))
+
+model2_st10 <- coxph(FinalHC3_nodem2_Surv ~ ST_10min + DOC_AGE_HC3 + FEMALE, data = FinalHC3_nodem2)
+table2_st10 <- tbl_regression(model2_st10, exponentiate = TRUE, include = "ST_10min",
+                              label = list(ST_10min = "Sedentary time (10 min/d)"))
+
+model2_sb <- coxph(FinalHC3_nodem2_Surv ~ SEDBOUT + DOC_AGE_HC3 + FEMALE, data = FinalHC3_nodem2)
+table2_sb <- tbl_regression(model2_sb, exponentiate = TRUE, include = "SEDBOUT",
+                            label = list(SEDBOUT = "Sedentary bout time (min)"))
+summary(model2_sb)
+
+# Merged table for MODEL 2: AGE and SEX ADJUSTED
+table_agesex_adjusted_merged <- tbl_stack(
+  tbls = list(table2_tpa, table2_mvpa10, table2_lpa10, table2_st10, table2_sb)
+) |>  
+  bold_p(t = 0.05) 
+table_agesex_adjusted_merged
+
+
+# ==============================================================================
+# MODEL 3: FULLY COVARIATE ADJUSTED 
+# ==============================================================================
+
+covariates_list <- ~ FEMALE + DOC_AGE_HC3 + EDLEVEL09 + RETIRED3 + 
+                     URBANRURALSTATUS + CIGSTAT3 + UNITNOW3 + 
+                     MARITAL_STATUS3 + ALT_BMI_HC3 + BP2 + 
+                     HEARING_FU4 + PREV_DISEASE
+
+model3_tpa <- coxph(update.formula(FinalHC3_nodem2_Surv ~ TPA, covariates_list), data = FinalHC3_nodem2)
+table3_tpa <- tbl_regression(model3_tpa, exponentiate = TRUE, include = "TPA",
+                             label = list(TPA = "TPA (cpm)"))
+
+model3_mvpa10 <- coxph(update.formula(FinalHC3_nodem2_Surv ~ MVPA_10min, covariates_list), data = FinalHC3_nodem2)
+table3_mvpa10 <- tbl_regression(model3_mvpa10, exponentiate = TRUE, include = "MVPA_10min",
+                                label = list(MVPA_10min = "MVPA (10 min/d)"))
+
+model3_lpa10 <- coxph(update.formula(FinalHC3_nodem2_Surv ~ LPA_10min, covariates_list), data = FinalHC3_nodem2)
+table3_lpa10 <- tbl_regression(model3_lpa10, exponentiate = TRUE, include = "LPA_10min",
+                               label = list(LPA_10min = "LPA (10 min/d)"))
+
+model3_st10 <- coxph(update.formula(FinalHC3_nodem2_Surv ~ ST_10min, covariates_list), data = FinalHC3_nodem2)
+table3_st10 <- tbl_regression(model3_st10, exponentiate = TRUE, include = "ST_10min",
+                              label = list(ST_10min = "Sedentary time (10 min/d)"))
+
+model3_sb <- coxph(update.formula(FinalHC3_nodem2_Surv ~ SEDBOUT, covariates_list), data = FinalHC3_nodem2)
+table3_sb <- tbl_regression(model3_sb, exponentiate = TRUE, include = "SEDBOUT",
+                            label = list(SEDBOUT = "Sedentary bout time (min)"))
+summary(model3_sb)
+
+# Merged table for MODEL 3: FULLY ADJUSTED
+table_fully_adjusted_merged <- tbl_stack(
+  tbls = list(table3_tpa, table3_mvpa10, table3_lpa10, table3_st10, table3_sb)
+) |>  
+  bold_p(t = 0.05) 
+table_fully_adjusted_merged
+
+
+# ==============================================================================
+# COMBINED SUMMARY TABLE (MODELS 1, 2, 3)
+# ==============================================================================
+final_combined_cox_table <- tbl_merge(
+  tbls = list(table_unadjusted_merged, table_agesex_adjusted_merged, table_fully_adjusted_merged),
+  tab_spanner = c("**Unadjusted**", "**Minimally Adjusted**", "**Fully Adjusted**") 
+) |> 
+  modify_header(label = "Baseline Physical Behaviour (Excl. pts with dementia before two-year follow-up") |> 
+  as_gt() |>
+  tab_options(table.font.size = pct(80))
+
+print(final_combined_cox_table)
+```
+
+###Sensitivity analysis: excluding participants with dementia in first 5 years
+```{r, Excluding those with dementia in first 5 years}
+FinalHC3_nodem5 <- FinalHC3 |> filter(!(INC_DEMENTIA_ALL_NUM == 1 & HC3_FOLLOW_UP <= 5))
+dim(FinalHC3_nodem5)
+
+# Survivor function = time, event
+FinalHC3_nodem5_Surv <- Surv(FinalHC3_nodem5$HC3_FOLLOW_UP, FinalHC3_nodem5$INC_DEMENTIA_ALL_NUM)
+FinalHC3_nodem5_Surv
+# ==============================================================================
+# MODEL 1: UNADJUSTED (5-Year Exclusion)
+# ==============================================================================
+
+# TPA (cpm)
+model1_tpa_nodem5 <- coxph(FinalHC3_nodem5_Surv ~ TPA, data = FinalHC3_nodem5)
+table1_tpa_nodem5 <- tbl_regression(model1_tpa_nodem5, exponentiate = TRUE,
+                                    label = list(TPA = "TPA (cpm)"))
+
+# MVPA (10 min/daily)
+model1_mvpa10_nodem5 <- coxph(FinalHC3_nodem5_Surv ~ MVPA_10min, data = FinalHC3_nodem5)
+table1_mvpa10_nodem5 <- tbl_regression(model1_mvpa10_nodem5, exponentiate = TRUE,
+                                       label = list(MVPA_10min = "MVPA (10 min/d)"))
+
+# LPA (10 min/daily)
+model1_lpa10_nodem5 <- coxph(FinalHC3_nodem5_Surv ~ LPA_10min, data = FinalHC3_nodem5)
+table1_lpa10_nodem5 <- tbl_regression(model1_lpa10_nodem5, exponentiate = TRUE,
+                                      label = list(LPA_10min = "LPA (10 min/d)"))
+
+# Sedentary time (10 min/daily)
+model1_st10_nodem5 <- coxph(FinalHC3_nodem5_Surv ~ ST_10min, data = FinalHC3_nodem5)
+table1_st10_nodem5 <- tbl_regression(model1_st10_nodem5, exponentiate = TRUE,
+                                     label = list(ST_10min = "Sedentary time (10 min/d)"))
+
+# Sedentary bout time (>30 mins)
+model1_sb_nodem5 <- coxph(FinalHC3_nodem5_Surv ~ SEDBOUT, data = FinalHC3_nodem5)
+table1_sb_nodem5 <- tbl_regression(model1_sb_nodem5, exponentiate = TRUE,
+                                   label = list(SEDBOUT = "Sedentary bout time (min)"))
+
+# Merged table for MODEL 1: UNADJUSTED
+table_unadjusted_merged_nodem5 <- tbl_stack(
+  tbls = list(table1_tpa_nodem5, table1_mvpa10_nodem5, table1_lpa10_nodem5, table1_st10_nodem5, table1_sb_nodem5)
+) |>  
+  bold_p(t = 0.05) |>  
+  modify_header(label = "**Physical Behaviour (Increment)**")
+table_unadjusted_merged_nodem5
+
+
+# ==============================================================================
+# MODEL 2: AGE AND SEX ADJUSTED (5-Year Exclusion)
+# ==============================================================================
+
+model2_tpa_nodem5 <- coxph(FinalHC3_nodem5_Surv ~ TPA + DOC_AGE_HC3 + FEMALE, data = FinalHC3_nodem5)
+table2_tpa_nodem5 <- tbl_regression(model2_tpa_nodem5, exponentiate = TRUE, include = "TPA",
+                                    label = list(TPA = "TPA (cpm)"))
+
+model2_mvpa10_nodem5 <- coxph(FinalHC3_nodem5_Surv ~ MVPA_10min + DOC_AGE_HC3 + FEMALE, data = FinalHC3_nodem5)
+table2_mvpa10_nodem5 <- tbl_regression(model2_mvpa10_nodem5, exponentiate = TRUE, include = "MVPA_10min",
+                                       label = list(MVPA_10min = "MVPA (10 min/d)"))
+
+model2_lpa10_nodem5 <- coxph(FinalHC3_nodem5_Surv ~ LPA_10min + DOC_AGE_HC3 + FEMALE, data = FinalHC3_nodem5)
+table2_lpa10_nodem5 <- tbl_regression(model2_lpa10_nodem5, exponentiate = TRUE, include = "LPA_10min",
+                                      label = list(LPA_10min = "LPA (10 min/d)"))
+
+model2_st10_nodem5 <- coxph(FinalHC3_nodem5_Surv ~ ST_10min + DOC_AGE_HC3 + FEMALE, data = FinalHC3_nodem5)
+table2_st10_nodem5 <- tbl_regression(model2_st10_nodem5, exponentiate = TRUE, include = "ST_10min",
+                                     label = list(ST_10min = "Sedentary time (10 min/d)"))
+
+model2_sb_nodem5 <- coxph(FinalHC3_nodem5_Surv ~ SEDBOUT + DOC_AGE_HC3 + FEMALE, data = FinalHC3_nodem5)
+table2_sb_nodem5 <- tbl_regression(model2_sb_nodem5, exponentiate = TRUE, include = "SEDBOUT",
+                                   label = list(SEDBOUT = "Sedentary bout time (min)"))
+summary(model2_sb_nodem5)
+
+# Merged table for MODEL 2: AGE and SEX ADJUSTED
+table_agesex_adjusted_merged_nodem5 <- tbl_stack(
+  tbls = list(table2_tpa_nodem5, table2_mvpa10_nodem5, table2_lpa10_nodem5, table2_st10_nodem5, table2_sb_nodem5)
+) |>  
+  bold_p(t = 0.05) 
+table_agesex_adjusted_merged_nodem5
+
+
+# ==============================================================================
+# MODEL 3: FULLY COVARIATE ADJUSTED (5-Year Exclusion)
+# ==============================================================================
+
+covariates_list <- ~ FEMALE + DOC_AGE_HC3 + EDLEVEL09 + RETIRED3 + 
+                     URBANRURALSTATUS + CIGSTAT3 + UNITNOW3 + 
+                     MARITAL_STATUS3 + ALT_BMI_HC3 + BP2 + 
+                     HEARING_FU4 + PREV_DISEASE
+
+model3_tpa_nodem5 <- coxph(update.formula(FinalHC3_nodem5_Surv ~ TPA, covariates_list), data = FinalHC3_nodem5)
+table3_tpa_nodem5 <- tbl_regression(model3_tpa_nodem5, exponentiate = TRUE, include = "TPA",
+                                    label = list(TPA = "TPA (cpm)"))
+
+model3_mvpa10_nodem5 <- coxph(update.formula(FinalHC3_nodem5_Surv ~ MVPA_10min, covariates_list), data = FinalHC3_nodem5)
+table3_mvpa10_nodem5 <- tbl_regression(model3_mvpa10_nodem5, exponentiate = TRUE, include = "MVPA_10min",
+                                       label = list(MVPA_10min = "MVPA (10 min/d)"))
+
+model3_lpa10_nodem5 <- coxph(update.formula(FinalHC3_nodem5_Surv ~ LPA_10min, covariates_list), data = FinalHC3_nodem5)
+table3_lpa10_nodem5 <- tbl_regression(model3_lpa10_nodem5, exponentiate = TRUE, include = "LPA_10min",
+                                      label = list(LPA_10min = "LPA (10 min/d)"))
+
+model3_st10_nodem5 <- coxph(update.formula(FinalHC3_nodem5_Surv ~ ST_10min, covariates_list), data = FinalHC3_nodem5)
+table3_st10_nodem5 <- tbl_regression(model3_st10_nodem5, exponentiate = TRUE, include = "ST_10min",
+                                     label = list(ST_10min = "Sedentary time (10 min/d)"))
+
+model3_sb_nodem5 <- coxph(update.formula(FinalHC3_nodem5_Surv ~ SEDBOUT, covariates_list), data = FinalHC3_nodem5)
+table3_sb_nodem5 <- tbl_regression(model3_sb_nodem5, exponentiate = TRUE, include = "SEDBOUT",
+                                   label = list(SEDBOUT = "Sedentary bout time (min)"))
+summary(model3_sb_nodem5)
+
+# Merged table for MODEL 3: FULLY ADJUSTED
+table_fully_adjusted_merged_nodem5 <- tbl_stack(
+  tbls = list(table3_tpa_nodem5, table3_mvpa10_nodem5, table3_lpa10_nodem5, table3_st10_nodem5, table3_sb_nodem5)
+) |>  
+  bold_p(t = 0.05) 
+table_fully_adjusted_merged_nodem5
+
+
+# ==============================================================================
+# COMBINED SUMMARY TABLE (MODELS 1, 2, 3 - 5-Year Exclusion)
+# ==============================================================================
+final_combined_cox_table_nodem5 <- tbl_merge(
+  tbls = list(table_unadjusted_merged_nodem5, table_agesex_adjusted_merged_nodem5, table_fully_adjusted_merged_nodem5),
+  tab_spanner = c("**Unadjusted**", "**Minimally Adjusted**", "**Fully Adjusted**") 
+) |>  
+  modify_header(label = "Baseline Physical Behaviour (Excl. pts with dementia before five-year follow-up)") |>  
+  as_gt() |>
+  tab_options(table.font.size = pct(80))
+
+print(final_combined_cox_table_nodem5)
+```
+
+
+
